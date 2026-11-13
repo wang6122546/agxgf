@@ -2,16 +2,7 @@ const $ = (selector) => document.querySelector(selector);
 const editor = $('#editor');
 const body = $('#dialogBody');
 const content = $('#content');
-// The prototype supplies the account role at entry. Production should use the authenticated session.
-const role = new URLSearchParams(location.search).get('role') === 'reviewer' ? 'reviewer' : 'issuer';
-const permissions = {
-  issuer: { issue: true, review: false },
-  reviewer: { issue: false, review: true },
-}[role];
 const recordsChannel = new BroadcastChannel('angang-permit-records');
-if (permissions.review) {
-  $('aside a[aria-current="page"]').href = 'index.html?role=reviewer';
-}
 let page = 'records';
 let filters = { keyword: '', org: '', status: '' };
 const defaultOrg = { id: 'default-dsc', name: '东鞍山烧结厂', shortName: '东烧', prefix: 'DS' };
@@ -20,6 +11,15 @@ const exampleOrgs = [
   { id: 'qds', name: '齐大山选矿厂', shortName: '齐选', prefix: 'QX' },
   { id: 'dgs', name: '大孤山球团厂', shortName: '大球', prefix: 'DQ' },
 ];
+// Prototype snapshot of the organization directory.
+const organizationDirectory = [
+  ...exampleOrgs.map(({ id, name }) => ({ id, name })),
+  ...['弓长岭有限公司选矿分公司', '齐大山分公司', '鞍千矿业有限责任公司', '东鞍山分公司',
+      '关宝山矿业有限公司', '弓长岭矿业公司', '弓长岭有限公司露采分公司', '弓长岭有限公司井采分公司',
+      '弓长岭有限公司灯塔分公司', '眼前山分公司', '大连分公司', '大孤山分公司']
+    .map((name, index) => ({ id: 'directory-' + (index + 1), name })),
+];
+
 let state;
 let database;
 let working = false;
@@ -86,19 +86,17 @@ function renderCardRows() {
     const matches = [card.number, card.person.name, card.person.identity, card.person.companies]
       .some((value) => String(value ?? '').toLowerCase().includes(keyword));
     if (!matches || (filters.org && card.org.id !== filters.org) || (filters.status && status !== filters.status)) return [];
-    const review = permissions.review && card.status === 'pending';
+    const review = card.status === 'pending';
     const actions = [
       button('预览上岗证', 'card', index),
       review ? button('审核', 'review', index) : '',
-      permissions.issue && card.status === 'rejected' ? button('修改', 'edit', index) : '',
+      card.status === 'rejected' ? button('修改', 'edit', index) : '',
       card.number ? button('下载图片', 'download', index) : '',
     ].join('');
     return [`<tr>${cells([card.number || '审核通过后生成', card.person.name, card.person.trade, card.org.name, card.person.companies, card.expiry])}<td><span class="record-status" data-status="${status}">${status}</span></td><td class="record-actions">${actions}</td></tr>`];
   });
-  if (permissions.review) {
-    const pending = state.cards.filter((card) => card.status === 'pending').length;
-    $('#reviewSummary').textContent = pending ? `待审核 ${pending} 条` : '暂无待审核申请';
-  }
+  const pending = state.cards.filter((card) => card.status === 'pending').length;
+  $('#reviewSummary').textContent = pending ? `待审核 ${pending} 条` : '暂无待审核申请';
   $('#cardRows').innerHTML = table(
     ['上岗证编号', '姓名', '工种', '发证机构', '相关方单位名称', '有效期至', '状态', '操作'],
     rows, state.cards.length ? '没有符合条件的记录' : '暂无发证记录',
@@ -107,20 +105,20 @@ function renderCardRows() {
 
 function render() {
   if (page === 'mapping') {
-    content.innerHTML = '<div class="toolbar"><h1>机构简称映射</h1></div>' +
+    content.innerHTML = '<div class="toolbar"><h1>机构简称映射</h1><button class="primary" data-action="add-mapping">＋ 新增</button></div>' +
       table(['机构全称', '证书简称', '编号字母码', '证书标题', '操作'], state.orgs.map((org, index) =>
-        `<tr>${cells([org.name, org.shortName, org.prefix, certificateTitle(org)])}<td>${permissions.issue ? button('编辑映射', 'mapping', index) : '—'}</td></tr>`), '暂无机构');
+        `<tr>${cells([org.name, org.shortName, org.prefix, certificateTitle(org)])}<td>${button('编辑映射', 'mapping', index)}</td></tr>`), '暂无机构');
     return;
   }
   const orgs = new Map([...state.orgs, ...state.cards.map((card) => card.org)].map((org) => [org.id, org.name]));
   const options = [...orgs].map(([id, name]) => `<option value="${html(id)}">${html(name)}</option>`).join('');
-  content.innerHTML = `<div class="toolbar"><h1>发证记录</h1>${permissions.issue ? '<button class="primary" data-action="issue">＋ 发证</button>' : ''}</div>
+  content.innerHTML = `<div class="toolbar"><h1>发证记录</h1><button class="primary" data-action="issue">＋ 发证</button></div>
     <form id="cardFilters" class="card-filters">
       <label>关键词<input name="keyword" placeholder="姓名、身份证号、证号或单位" value="${html(filters.keyword)}"></label>
       <label>发证机构<select name="org"><option value="">全部机构</option>${options}</select></label>
       <label>状态<select name="status"><option value="">全部状态</option><option>待审核</option><option>审核驳回</option><option>有效</option><option>已过期</option></select></label>
       <button class="primary">搜索</button><button type="button" data-action="reset">重置</button>
-    </form>${permissions.review ? '<p id="reviewSummary" class="hint"></p>' : ''}<div id="cardRows"></div>`;
+    </form><p id="reviewSummary" class="hint"></p><div id="cardRows"></div>`;
   const form = $('#cardFilters');
   form.elements.org.value = filters.org;
   form.elements.status.value = filters.status;
@@ -134,27 +132,36 @@ function render() {
 }
 
 function editMapping(org) {
-  open('编辑机构简称映射', `<form id="mappingForm"><div class="fields">
-    <label class="full">机构全称<input value="${html(org.name)}" readonly></label>
-    <label>证书简称<input name="shortName" required maxlength="24" value="${html(org.shortName)}"></label>
-    <label>编号字母码<input name="prefix" required maxlength="12" pattern="[A-Za-z]+" value="${html(org.prefix)}"></label>
+  const available = organizationDirectory.filter((item) => !state.orgs.some(({ id }) => id === item.id));
+  const options = available.map((item) => `<option value="${html(item.id)}">${html(item.name)}</option>`).join('');
+  open(org ? '编辑机构简称映射' : '新增机构简称映射', `<form id="mappingForm"><div class="fields">
+    <label class="full">机构全称${org ? `<input value="${html(org.name)}" readonly>` :
+      `<select name="organization" required><option value="">${available.length ? '请选择组织架构中的机构' : '全部机构已配置映射'}</option>${options}</select>`}</label>
+    <label>证书简称<input name="shortName" required maxlength="24" value="${html(org?.shortName)}"></label>
+    <label>编号字母码<input name="prefix" required maxlength="12" pattern="[A-Za-z]+" value="${html(org?.prefix)}"></label>
     </div><p id="formStatus" class="hint" role="status"></p>
     <div class="actions"><button class="primary">保存</button></div></form>`);
   $('#mappingForm').onsubmit = (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
+    const selected = org ?? organizationDirectory.find((item) => item.id === form.get('organization'));
+    if (!selected) return feedback('请选择机构。', true);
     const shortName = form.get('shortName').trim();
     const prefix = form.get('prefix').toUpperCase();
     if (!shortName) return feedback('请输入证书简称。', true);
     save((registry) => {
-      if (registry.orgs.some((item) => item.id !== org.id && item.prefix === prefix) ||
-          registry.cards.some((card) => card.org.id !== org.id && card.org.prefix === prefix)) {
+      if (!org && registry.orgs.some((item) => item.id === selected.id)) {
+        throw new Error('该机构已有映射，请刷新后编辑。');
+      }
+      if (registry.orgs.some((item) => item.id !== selected.id && item.prefix === prefix) ||
+          registry.cards.some((card) => card.org.id !== selected.id && card.org.prefix === prefix)) {
         throw new Error('该编号字母码已被其他机构使用。');
       }
-      const current = { ...registry.orgs.find((item) => item.id === org.id), shortName, prefix };
-      registry.orgs = registry.orgs.map((item) => item.id === org.id ? current : item);
+      const current = { ...selected, shortName, prefix };
+      if (org) registry.orgs = registry.orgs.map((item) => item.id === selected.id ? current : item);
+      else registry.orgs.push(current);
       for (const card of registry.cards) {
-        if (card.status === 'pending' && card.org.id === org.id) card.org = { ...current };
+        if (card.status === 'pending' && card.org.id === selected.id) card.org = { ...current };
       }
     }, '机构映射已保存');
   };
@@ -440,7 +447,7 @@ function issueCard(rejectedCard) {
   };
 
   $('#issue').onclick = () => {
-    if (!permissions.issue || !preview || !form.reportValidity()) return;
+    if (!preview || !form.reportValidity()) return;
     const draft = preview;
     save((registry) => {
       const org = registry.orgs.find((item) => item.id === draft.org.id);
@@ -460,7 +467,7 @@ function issueCard(rejectedCard) {
 
 function openCard(card, review = false) {
   const pending = card.status === 'pending';
-  const canReview = review && pending && permissions.review;
+  const canReview = review && pending;
   const canPrint = Boolean(card.number);
   open(canReview ? '审核上岗证' : '预览上岗证', cardView(card) +
     `<p class="hint">状态　${cardStatus(card)}</p><p id="formStatus" class="hint" role="status"></p>` +
@@ -470,7 +477,6 @@ function openCard(card, review = false) {
   if (download) download.onclick = () => downloadCard(card);
   for (const decision of body.querySelectorAll('[data-review]')) {
     decision.onclick = () => {
-      if (!permissions.review) return;
       const approved = decision.dataset.review === 'approved';
       save((registry) => {
         const current = registry.cards.find((item) => item.id === card.id);
@@ -498,9 +504,10 @@ content.addEventListener('click', (event) => {
   const target = event.target.closest('[data-action]');
   if (!target) return;
   const { action, index } = target.dataset;
-  if (action === 'mapping' && permissions.issue) editMapping(state.orgs[index]);
-  if (action === 'issue' && permissions.issue) issueCard();
-  if (action === 'edit' && permissions.issue && state.cards[index]?.status === 'rejected') issueCard(state.cards[index]);
+  if (action === 'add-mapping') editMapping();
+  if (action === 'mapping') editMapping(state.orgs[index]);
+  if (action === 'issue') issueCard();
+  if (action === 'edit' && state.cards[index]?.status === 'rejected') issueCard(state.cards[index]);
   if (action === 'card' || action === 'review') openCard(state.cards[index], action === 'review');
   if (action === 'download') downloadCard(state.cards[index]);
   if (action === 'reset') {
