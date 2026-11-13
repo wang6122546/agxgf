@@ -1,3 +1,5 @@
+import { pinyin } from './vendor/pinyin-pro-3.29.5.mjs';
+
 const $ = (selector) => document.querySelector(selector);
 const editor = $('#editor');
 const body = $('#dialogBody');
@@ -106,7 +108,7 @@ function renderCardRows() {
 function render() {
   if (page === 'mapping') {
     content.innerHTML = '<div class="toolbar"><h1>机构简称映射</h1><button class="primary" data-action="add-mapping">＋ 新增</button></div>' +
-      table(['机构全称', '证书简称', '编号字母码', '证书标题', '操作'], state.orgs.map((org, index) =>
+      table(['机构全称', '机构简称', '编号字母码', '证书标题', '操作'], state.orgs.map((org, index) =>
         `<tr>${cells([org.name, org.shortName, org.prefix, certificateTitle(org)])}<td>${button('编辑映射', 'mapping', index)}</td></tr>`), '暂无机构');
     return;
   }
@@ -131,24 +133,35 @@ function render() {
   renderCardRows();
 }
 
+function abbreviationCode(shortName) {
+  return pinyin(shortName, { pattern: 'first', toneType: 'none', type: 'array' })
+    .join('').replace(/[^A-Za-z]/g, '').toUpperCase();
+}
+
 function editMapping(org) {
   const available = organizationDirectory.filter((item) => !state.orgs.some(({ id }) => id === item.id));
   const options = available.map((item) => `<option value="${html(item.id)}">${html(item.name)}</option>`).join('');
   open(org ? '编辑机构简称映射' : '新增机构简称映射', `<form id="mappingForm"><div class="fields">
     <label class="full">机构全称${org ? `<input value="${html(org.name)}" readonly>` :
       `<select name="organization" required><option value="">${available.length ? '请选择组织架构中的机构' : '全部机构已配置映射'}</option>${options}</select>`}</label>
-    <label>证书简称<input name="shortName" required maxlength="24" value="${html(org?.shortName)}"></label>
-    <label>编号字母码<input name="prefix" required maxlength="12" pattern="[A-Za-z]+" value="${html(org?.prefix)}"></label>
+    <label>机构简称<input name="shortName" required maxlength="24" value="${html(org?.shortName)}"></label>
+    <label>编号字母码<input name="prefix" readonly placeholder="根据机构简称自动生成"></label>
     </div><p id="formStatus" class="hint" role="status"></p>
     <div class="actions"><button class="primary">保存</button></div></form>`);
-  $('#mappingForm').onsubmit = (event) => {
+  const mappingForm = $('#mappingForm');
+  const { shortName: shortNameInput, prefix: prefixInput } = mappingForm.elements;
+  const updatePrefix = () => { prefixInput.value = abbreviationCode(shortNameInput.value); };
+  shortNameInput.addEventListener('input', updatePrefix);
+  updatePrefix();
+  mappingForm.onsubmit = (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const selected = org ?? organizationDirectory.find((item) => item.id === form.get('organization'));
     if (!selected) return feedback('请选择机构。', true);
     const shortName = form.get('shortName').trim();
-    const prefix = form.get('prefix').toUpperCase();
-    if (!shortName) return feedback('请输入证书简称。', true);
+    const prefix = abbreviationCode(shortName);
+    if (!shortName) return feedback('请输入机构简称。', true);
+    if (!prefix) return feedback('机构简称需包含可转换为字母码的中文或英文字母。', true);
     save((registry) => {
       if (!org && registry.orgs.some((item) => item.id === selected.id)) {
         throw new Error('该机构已有映射，请刷新后编辑。');
