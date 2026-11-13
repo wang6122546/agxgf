@@ -12,8 +12,14 @@ const recordsChannel = new BroadcastChannel('angang-permit-records');
 if (permissions.review) {
   $('aside a[aria-current="page"]').href = 'index.html?role=reviewer';
 }
+let page = 'records';
 let filters = { keyword: '', org: '', status: '' };
-const defaultOrg = { id: 'default-dsc', name: '东烧厂', prefix: 'DSC' };
+const defaultOrg = { id: 'default-dsc', name: '东鞍山烧结厂', shortName: '东烧', prefix: 'DS' };
+const exampleOrgs = [
+  defaultOrg,
+  { id: 'qds', name: '齐大山选矿厂', shortName: '齐选', prefix: 'QX' },
+  { id: 'dgs', name: '大孤山球团厂', shortName: '大球', prefix: 'DQ' },
+];
 let state;
 let database;
 let working = false;
@@ -58,7 +64,7 @@ function access(change) {
 }
 
 const date = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
-const certificateTitle = (org) => org.name + '长期相关方上岗证';
+const certificateTitle = (org) => (org.shortName || org.name) + '长期相关方上岗证';
 const cells = (values) => values.map((value) => '<td>' + html(value) + '</td>').join('');
 const button = (label, action, index) => `<button data-action="${action}" data-index="${index}">${label}</button>`;
 
@@ -100,6 +106,12 @@ function renderCardRows() {
 }
 
 function render() {
+  if (page === 'mapping') {
+    content.innerHTML = '<div class="toolbar"><h1>机构简称映射</h1></div>' +
+      table(['机构全称', '证书简称', '编号字母码', '证书标题', '操作'], state.orgs.map((org, index) =>
+        `<tr>${cells([org.name, org.shortName, org.prefix, certificateTitle(org)])}<td>${permissions.issue ? button('编辑映射', 'mapping', index) : '—'}</td></tr>`), '暂无机构');
+    return;
+  }
   const orgs = new Map([...state.orgs, ...state.cards.map((card) => card.org)].map((org) => [org.id, org.name]));
   const options = [...orgs].map(([id, name]) => `<option value="${html(id)}">${html(name)}</option>`).join('');
   content.innerHTML = `<div class="toolbar"><h1>发证记录</h1>${permissions.issue ? '<button class="primary" data-action="issue">＋ 发证</button>' : ''}</div>
@@ -119,6 +131,42 @@ function render() {
     renderCardRows();
   };
   renderCardRows();
+}
+
+function editMapping(org) {
+  open('编辑机构简称映射', `<form id="mappingForm"><div class="fields">
+    <label class="full">机构全称<input value="${html(org.name)}" readonly></label>
+    <label>证书简称<input name="shortName" required maxlength="24" value="${html(org.shortName)}"></label>
+    <label>编号字母码<input name="prefix" required maxlength="12" pattern="[A-Za-z]+" value="${html(org.prefix)}"></label>
+    </div><p id="formStatus" class="hint" role="status"></p>
+    <div class="actions"><button class="primary">保存</button></div></form>`);
+  $('#mappingForm').onsubmit = (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const shortName = form.get('shortName').trim();
+    const prefix = form.get('prefix').toUpperCase();
+    if (!shortName) return feedback('请输入证书简称。', true);
+    save((registry) => {
+      if (registry.orgs.some((item) => item.id !== org.id && item.prefix === prefix) ||
+          registry.cards.some((card) => card.org.id !== org.id && card.org.prefix === prefix)) {
+        throw new Error('该编号字母码已被其他机构使用。');
+      }
+      const current = { ...registry.orgs.find((item) => item.id === org.id), shortName, prefix };
+      registry.orgs = registry.orgs.map((item) => item.id === org.id ? current : item);
+      for (const card of registry.cards) {
+        if (card.status === 'pending' && card.org.id === org.id) card.org = { ...current };
+      }
+    }, '机构映射已保存');
+  };
+}
+
+for (const tab of document.querySelectorAll('[data-page]')) {
+  tab.onclick = () => {
+    if (!state) return;
+    page = tab.dataset.page;
+    for (const item of document.querySelectorAll('[data-page]')) item.setAttribute('aria-pressed', item === tab);
+    render();
+  };
 }
 
 function open(title, markup) {
@@ -290,7 +338,7 @@ function downloadCard(card) {
 }
 
 function issueCard(rejectedCard) {
-  const choices = state.orgs.map((org) => `<option value="${html(org.id)}" ${(state.orgs.length === 1 ? state.orgs[0].id : '') === org.id ? 'selected' : ''}>${html(org.name)}</option>`).join('');
+  const choices = state.orgs.map((org) => `<option value="${html(org.id)}" ${state.orgs[0].id === org.id ? 'selected' : ''}>${html(org.name)}</option>`).join('');
   open(rejectedCard ? '修改上岗证申请' : '发放上岗证', `<form id="personForm">
     <div class="fields">
       <label class="full">发证机构<select name="orgId" required><option value="">请选择机构</option>${choices}</select></label>
@@ -396,7 +444,7 @@ function issueCard(rejectedCard) {
     const draft = preview;
     save((registry) => {
       const org = registry.orgs.find((item) => item.id === draft.org.id);
-      if (org.name !== draft.org.name || org.prefix !== draft.org.prefix) throw new Error('机构信息已更新，请关闭后重新发证。');
+      if (org.name !== draft.org.name || org.shortName !== draft.org.shortName || org.prefix !== draft.org.prefix) throw new Error('机构信息已更新，请关闭后重新发证。');
       if (draft.expiry < date()) throw new Error('请选择今天或之后的有效期。');
       const index = rejectedCard ? registry.cards.findIndex((card) => card.id === rejectedCard.id) : -1;
       if (rejectedCard && registry.cards[index]?.status !== 'rejected') {
@@ -450,6 +498,7 @@ content.addEventListener('click', (event) => {
   const target = event.target.closest('[data-action]');
   if (!target) return;
   const { action, index } = target.dataset;
+  if (action === 'mapping' && permissions.issue) editMapping(state.orgs[index]);
   if (action === 'issue' && permissions.issue) issueCard();
   if (action === 'edit' && permissions.issue && state.cards[index]?.status === 'rejected') issueCard(state.cards[index]);
   if (action === 'card' || action === 'review') openCard(state.cards[index], action === 'review');
@@ -463,7 +512,18 @@ content.addEventListener('click', (event) => {
 try {
   database = await openDatabase();
   state = await access((registry) => {
-    if (!registry.orgs.length) registry.orgs.push(defaultOrg);
+    if (!registry.orgMappingInitialized) {
+      for (const org of exampleOrgs) {
+        const index = registry.orgs.findIndex((item) => item.id === org.id);
+        if (index >= 0) registry.orgs[index] = { ...registry.orgs[index], ...org };
+        else registry.orgs.push({ ...org });
+      }
+      for (const card of registry.cards) {
+        const current = registry.orgs.find((item) => item.id === card.org.id);
+        if (card.status === 'pending' && current) card.org = { ...current };
+      }
+      registry.orgMappingInitialized = true;
+    }
     seedDemoRecords(registry);
 
     const demoId = 'demo-permit-review-extra';
@@ -495,7 +555,8 @@ recordsChannel.addEventListener('message', async () => {
   if (!state || working) return;
   try {
     state = await access();
-    renderCardRows();
+    if (page === 'records') renderCardRows();
+    else render();
   } catch {
     // The current list remains usable if a background refresh fails.
   }

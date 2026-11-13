@@ -94,3 +94,5 @@ dt{color:#546780;font-size:13px}dd{margin:3px 0 9px;font-weight:600}
 .record-status[data-status="待审核"] { background: #fff0cb; color: #794a08; }
 .record-status[data-status="审核驳回"] { background: #fce6e6; color: #a32a32; }
 .record-status[data-status="有效"] { background: #def4e9; color: #185b43; }
+.permit-tabs { margin-bottom: 6px; gap: 4px; }
+.permit-tabs button { min-width: 140px; padding: 9px 24px; }
